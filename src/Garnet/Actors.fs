@@ -1,4 +1,4 @@
-﻿namespace Garnet.Actors
+﻿namespace Garnet.Composition
 
 open System
 open System.Threading
@@ -52,8 +52,10 @@ module internal Sending =
                 sourceId <- id
             member c.AddRecipient x =
                 Buffer.addToArray &recipientCount &recipients x.value
-            member c.AddMessage x =
+            member c.Write x =
                 Buffer.addToArray &bufferLength &buffer x
+            member c.WriteAll x =
+                Buffer.addAllToArray &bufferLength &buffer x
             member c.Dispose() =
                 c.Sender.Send(c)            
         override c.ToString() =
@@ -191,7 +193,7 @@ module internal Pooling =
 module internal Processing =
     // Stateless
     type IDeliverer =
-        abstract Deliver : LocalPool * IInbox * Mail<obj> -> unit        
+        abstract Deliver : LocalPool * IInbox * Envelope<obj> -> unit        
 
     // Stateless
     type Deliverer<'a>() =
@@ -782,10 +784,6 @@ module ActorSystem =
 
         member c.Run msg =
             c.pump.Run(c.actorId, msg)
-
-    type Mail<'a> with
-        member c.Respond(msg) =
-            c.outbox.Send(c.sourceId, msg)
     
 type Sender = IOutbox -> unit
 

@@ -2,13 +2,15 @@
 
 [![Build status](https://ci.appveyor.com/api/projects/status/g82kak7btxp48rnd?svg=true)](https://ci.appveyor.com/project/bcarruthers/garnet)
 
-> Garnet is a lightweight game composition library for F# with entity-component-system (ECS) and actor-like messaging features.
+[NuGet package](https://www.nuget.org/packages/Garnet/)
+
+Garnet is a lightweight game composition library for F# with entity-component-system (ECS) and actor-like messaging features.
 
 _TODO Перевести на русский:_
 Garnet - легковесная библиотека для сборки игр на F# с entity-component-system (ECS) и актороподобными возможностями обработки сообщений.
 
 ```fsharp
-open Garnet.Ecs
+open Garnet.Composition
 
 // > events
 // события
@@ -50,10 +52,11 @@ for i = 1 to 10 do
 
 ## Table of contents | Содержание
 
-> * [Background](#background)
-> * [Goals](#goals)
-> * [Building](#building)
-> * [Samples](#samples)
+> * Introduction
+>     * [Background](#background)
+>     * [Goals](#goals)
+>     * [Building](#building)
+>     * [Samples](#samples)
 > * Guide
 >     * [Containers](#containers)
 >     * [Entities](#entities)
@@ -66,10 +69,11 @@ for i = 1 to 10 do
 > * [License](#license)
 > * [Maintainers](#maintainers)
 
-* [Предпосылки](#background)
-* [Цели](#goals)
-* [Сборка](#building)
-* [Примеры](#samples)
+* Введение
+	* [Предпосылки](#background)
+	* [Цели](#goals)
+	* [Сборка](#building)
+	* [Примеры](#samples)
 * Guide
     * [Контейнеры](#containers)
     * [Сущности](#entities)
@@ -81,6 +85,22 @@ for i = 1 to 10 do
 * [FAQ](#faq)
 * [Лицензия](#license)
 * [Maintainers](#maintainers)
+
+## Getting started
+
+> 1. Create either a .NET Framework or .NET Core application.
+> 2. Reference the [Garnet NuGet package](https://www.nuget.org/packages/Garnet/). 
+> 3. See code samples for library usage.
+
+1. Создайте приложение .NET или .NET Core.
+2. Подключите [NuGet-пакет Garnet](https://www.nuget.org/packages/Garnet/). 
+3. Ориентируйтесь на примеры использования библиотеки.
+
+> Note that for .NET Core, if you encounter warnings about FSharp.Core package downgrade, you may need to add an explicit reference in your .fsproj file to the newer FSharp.Core version: 
+
+Обратите внимание, в случае .NET Core, если вы получите предупреждение об ~даунгрейде FSharp.Core, вам потребуется добавить ссылку на новую версию FSharp.Core в .fsproj явно.
+
+     <PackageReference Include="FSharp.Core" Version="4.6.2" />
 
 ## Background | Предпосылки
 

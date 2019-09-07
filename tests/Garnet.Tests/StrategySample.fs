@@ -1,12 +1,11 @@
-﻿module Garnet.Samples.Strategy
+﻿module Garnet.Tests.StrategySample
 
 // This sample demonstrates using component storage for grid cells
 // for use in a strategy game.
 
 open System
 open System.Text
-open Garnet.Ecs
-open Garnet.Actors
+open Garnet.Composition
 
 // primitives
 [<Struct>]
@@ -95,9 +94,10 @@ type WorldGrid() =
     member c.Get p = { 
         id = p
         container = store 
-        recycle = ignore
         }
     member c.Commit() =
+        let locs = store.GetSegments<Loc>()
+        store.Segments.ApplyRemovalsFrom(locs)   
         store.Commit()
     interface ISegmentStore<Loc> with
         member c.GetSegments() = store.GetSegments()
@@ -193,5 +193,9 @@ let run() =
     // print a single unit
     printfn "%s" <| c.Get(Eid 64).ToString()
     // print a single grid cell
-    printfn "%s" <| c.GetInstance<WorldGrid>().Get({ x = 10; y = 15 }).ToString()
-
+    let cell = c.GetInstance<WorldGrid>().Get({ x = 10; y = 15 })
+    printfn "%s" <| cell.ToString()
+    // destroy cell
+    cell.Destroy()
+    c.Commit()
+    printfn "%s" <| cell.ToString()

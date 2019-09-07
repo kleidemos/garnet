@@ -1,4 +1,4 @@
-﻿namespace Garnet.Ecs
+﻿namespace Garnet.Composition
 
 open System
 open System.Collections.Generic
@@ -8,42 +8,22 @@ open Garnet.Comparisons
 open Garnet.Formatting
 open Garnet.Metrics
 open Garnet.Collections
-open Garnet.Actors
+
+/// Event published when commit occurs    
+type Commit = struct end
     
-type EventHandler<'a> = Buffer<'a> -> unit
+type internal EventHandler<'a> = Buffer<'a> -> unit
 
-type IEventHandler =
-    abstract member Handle<'a> : List<'a> -> unit
-
-type Subscription<'a>(handler : EventHandler<'a>) =
-    let mutable isDisposed = false
-    let handler = handler
-    member c.IsUnsubscribed = isDisposed
-    member c.Handle batch = handler batch
-    interface IDisposable with
-        member c.Dispose() = isDisposed <- true
-
-type internal Subscription(handler : IEventHandler) =
-    let mutable isDisposed = false
-    let handler = handler
-    member c.IsUnsubscribed = isDisposed
-    member c.Handle batch = handler.Handle batch
-    interface IDisposable with
-        member c.Dispose() = isDisposed <- true
-    
 type IPublisher =
-    abstract member PublishAll<'a> : Buffer<'a> -> List<Subscription<'a>> -> unit
+    abstract member PublishAll<'a> : Buffer<'a> * Buffer<EventHandler<'a>> -> unit
 
 type internal IChannel =
     abstract member Clear : unit -> unit
     abstract member Commit : unit -> unit
     abstract member Publish : unit -> bool
-            
-type internal NullPublisher() =
-    interface IPublisher with
-        member c.PublishAll batch handlers = ()
+    abstract member SetPublisher : IPublisher voption -> unit
 
-type Publisher() =
+module internal Publisher =
     let formatBatch (messages : Buffer<_>) =
         let sb = System.Text.StringBuilder()
         let count = min 20 messages.Count
@@ -55,160 +35,89 @@ type Publisher() =
             sb.AppendLine().Append(sprintf "(+%d)" remaining) |> ignore
         sb.ToString()
 
-    static member Default = Publisher() :> IPublisher
-    static member Null = NullPublisher() :> IPublisher
-
-    interface IPublisher with
-        member c.PublishAll<'a> (batch : Buffer<'a>) handlers =
-            let count = handlers.Count
-            for i = 0 to count - 1 do
-                let handler = handlers.[i]
-                try
-                    handler.Handle batch
-                with
-                | ex -> 
-                    let str = 
-                        sprintf "Error in handler %d on %s batch (%d):%s" 
-                            i (typeof<'a> |> typeToString) batch.Count (formatBatch batch)
-                    exn(str, ex) |> raise                
-
-type PrintPublisherOptions = {
-    isPrintEnabled : bool
-    printLabel : string
-    maxPrintMessages : int
-    minDurationUsec : int
-    sendTiming : Timing -> unit
-    sendLogMessage : string -> unit
-    }
-
-module PrintPublisherOptions =
-    let defaultOptions = {
-        isPrintEnabled = false
-        printLabel = ""
-        maxPrintMessages = 10
-        minDurationUsec = 0
-        sendTiming = ignore
-        sendLogMessage = printfn "%s"
-        }
-
-/// Prints published events
-type PrintPublisher(publisher : IPublisher, formatter : IFormatter) =
-    let sb = StringBuilder()
-    let ticksPerSec = Timing.ticksPerMs / int64 1000
-    let enabledTypes = HashSet<Type>()
-    let mutable count = 0
-    let mutable options = PrintPublisherOptions.defaultOptions
-    new() = PrintPublisher(Publisher(), Formatter())
-    member c.Options = options
-    member c.SetOptions newOptions =
-        options <- newOptions
-    member c.Enable t =
-        enabledTypes.Add t |> ignore
-    member c.Disable t =
-        enabledTypes.Remove t |> ignore
-    interface IPublisher with        
-        member c.PublishAll<'a> (batch : Buffer<'a>) handlers =
-            let options = options
-            let start = Timing.getTimestamp()
-            let handlerCount = handlers.Count
-            let mutable completed = false
+    let publishAll<'a>(batch : Buffer<'a>) (handlers : Buffer<_>) =
+        for i = 0 to handlers.Count - 1 do
+            let handler = handlers.[i]
             try
-                publisher.PublishAll batch handlers
-                completed <- true
-            finally
-                let stop = Timing.getTimestamp()
-                let typeInfo = CachedTypeInfo<'a>.Info
-                // send timing to accumulator
-                if typeInfo.canSendTimings then
-                    options.sendTiming {
-                        name = typeInfo.typeName
-                        start = start
-                        stop = stop
-                        count = batch.Count 
-                        }
-                // print immediate timing
-                let canPrint = 
-                    (options.isPrintEnabled || enabledTypes.Contains typeof<'a>) && 
-                    formatter.CanFormat<'a>() && 
-                    typeInfo.canPrint
-                if canPrint then
-                    let duration = stop - start
-                    let usec = duration * 1000000L / ticksPerSec |> int
-                    if not completed || usec >= options.minDurationUsec then
-                        sb.Append(
-                            sprintf "[%s] %d: %s %dmsg %dh %dus%s"
-                                options.printLabel count (typeof<'a> |> typeToString)
-                                batch.Count handlerCount usec
-                                (if completed then "" else " FAILED")
-                            ) |> ignore
-                        // print messages
-                        if not typeInfo.isEmpty then //if typeInfo.canPrint then
-                            formatMessagesTo sb formatter.Format batch options.maxPrintMessages
-                        sb.AppendLine() |> ignore
-                        options.sendLogMessage (sb.ToString())
-                        sb.Clear() |> ignore
-                count <- count + 1
+                handler batch
+            with
+            | ex -> 
+                let str = 
+                    sprintf "Error in handler %d on %s batch (%d):%s" 
+                        i (typeof<'a> |> typeToString) batch.Count (formatBatch batch)
+                exn(str, ex) |> raise                
 
-type Channel<'a>(publisher : IPublisher) =
-    let isUnsubscribed = Predicate(fun (sub : Subscription<'a>) -> sub.IsUnsubscribed)
-    let handlers = List<Subscription<'a>>()
-    let singleEventPool = List<Buffer<'a>>()
+type Channel<'a>() =
+    let unsubscribed = List<EventHandler<'a>>()
+    let handlers = ResizableBuffer<EventHandler<'a>>(8)
+    let stack = ResizableBuffer<'a>(8)
+    let mutable publisher : IPublisher voption = ValueNone
     let mutable events = ResizableBuffer<'a>(8)
     let mutable pending = ResizableBuffer<'a>(8)
     let mutable total = 0
     member c.Clear() =
-        events.Clear()
+        stack.Clear()
         pending.Clear()
-        total <- 0
+    member c.SetPublisher p =
+        publisher <- p
     member c.PublishAll batch =
-        publisher.PublishAll batch handlers
+        match publisher with 
+        | ValueNone -> Publisher.publishAll batch handlers.Buffer
+        | ValueSome publisher -> publisher.PublishAll(batch, handlers.Buffer)
     /// Dispatches event immediately/synchronously
     member c.Publish event =
-        // create a batch consisting of single item
-        let mutable batch = 
-            if singleEventPool.Count = 0 then Buffer.zeroCreate<'a> 1 
-            else 
-                let i = singleEventPool.Count - 1
-                let list = singleEventPool.[i]
-                singleEventPool.RemoveAt(i)
-                list
-        batch.[0] <- event
-        // run on all handlers
-        c.PublishAll batch
-        // return batch to pool
-        batch.Clear()
-        singleEventPool.Add(batch)
+        stack.Add event
+        try
+            c.PublishAll {
+                Array = stack.Array
+                Offset = stack.Count - 1
+                Count = 1
+                }
+        finally
+            stack.RemoveLast()
     member c.Send(event) =
         pending.Add(event)
         total <- total + 1
-    member c.SendAll(events : List<_>) =
+    member c.SendAll(events : Buffer<_>) =
         for event in events do
             pending.Add(event)
         total <- total + events.Count
-    member c.OnAll(handler) =
-        let sub = new Subscription<_>(handler)
-        handlers.Add(sub)
-        sub :> IDisposable
+    member c.OnAll(handler : EventHandler<_>) =
+        handlers.Add(handler)
+        Disposable.init <| fun () -> 
+            unsubscribed.Add(handler)
     /// Calls handler behaviors and prunes subscriptions after
     member c.Publish() =
         if events.Count = 0 then false
         else
             c.PublishAll events.Buffer
             true
+    /// Commit pending events to publish list and resets
+    member c.Commit() =
+        if unsubscribed.Count > 0 then
+            let mutable i = 0
+            while i < handlers.Count do
+                // only remove one occurrence
+                if unsubscribed.Remove handlers.[i] then
+                    // note ordering changes, but subscribers of the same
+                    // event type should not have any ordering dependencies
+                    handlers.[i] <- handlers.[handlers.Count - 1]
+                    handlers.RemoveLast()
+                else i <- i + 1
+            unsubscribed.Clear()
+        // clear prior events and swap in pending to current
+        events.Clear()
+        let temp = pending
+        pending <- events
+        events <- temp
     interface IChannel with
         member c.Clear() = c.Clear()
-        /// Calls handler behaviors and prunes subscriptions after
         member c.Publish() = c.Publish()
-        /// Commit pending events to publish list and resets
-        member c.Commit() =
-            handlers.RemoveAll(isUnsubscribed) |> ignore
-            events.Clear()
-            let temp = pending
-            pending <- events
-            events <- temp
+        member c.Commit() = c.Commit()
+        member c.SetPublisher p = c.SetPublisher p
     override c.ToString() =            
         sprintf "%s: %dH %dP %dE %dT %dSE" (typeof<'a> |> typeToString) 
-            handlers.Count pending.Count events.Count total singleEventPool.Count
+            handlers.Count pending.Count events.Count total stack.Count
 
 type IChannels =
     abstract member GetChannel<'a> : unit -> Channel<'a>
@@ -216,8 +125,8 @@ type IChannels =
 /// Supports reentrancy
 type Channels() =
     // lookup needed for reentrancy since it has a list we can iterate over
-    let mutable publisher = Publisher.Default
     let lookup = IndexedLookup<Type, IChannel>()
+    let mutable publisher : IPublisher voption = ValueNone
     member c.Clear() =
         for i = 0 to lookup.Count - 1 do
             lookup.[i].Clear()
@@ -226,6 +135,8 @@ type Channels() =
             lookup.[i].Commit()
     member c.SetPublisher(newPublisher) =
         publisher <- newPublisher
+        for i = 0 to lookup.Count - 1 do
+            lookup.[i].SetPublisher newPublisher
     /// Returns true if any events were handled
     member c.Publish() =
         let mutable published = false
@@ -236,12 +147,12 @@ type Channels() =
         let t = typeof<'a>
         let i =
             match lookup.TryGetIndex(t) with
-            | false, _ -> lookup.Add(t, Channel<'a>(c))
+            | false, _ -> 
+                let channel = Channel<'a>()
+                channel.SetPublisher publisher
+                lookup.Add(t, channel)
             | true, i -> i
         lookup.[i] :?> Channel<'a>
-    interface IPublisher with
-        member c.PublishAll batch handlers =
-            publisher.PublishAll batch handlers
     interface IChannels with
         member c.GetChannel<'a>() = c.GetChannel<'a>()
     override c.ToString() =
@@ -285,7 +196,7 @@ module Channels =
             c.GetChannel<'a>().OnAll(
                 fun batch -> 
                     for i = 0 to batch.Count - 1 do
-                        handler (batch.[i]))
+                        handler batch.[i])
 
     type Channel<'a> with    
         member c.Wait(msg) =
@@ -295,3 +206,94 @@ module Channels =
     type IChannels with    
         member c.Wait(msg) =
             c.GetChannel<'a>().Wait msg
+
+type internal NullPublisher() =
+    static let mutable instance = NullPublisher() :> IPublisher
+    static member Instance = instance
+    interface IPublisher with
+        member c.PublishAll(batch, handlers) = ()
+
+type PrintPublisherOptions = {
+    enableLog : bool
+    logLabel : string
+    messageSizeLimit : int
+    minDurationUsec : int
+    sendLog : string -> unit
+    sendTiming : Timing -> unit
+    canSendLog : Type -> bool
+    canSendTiming : Type -> bool
+    basePublisher : IPublisher
+    formatter : IFormatter
+    }
+
+/// Prints published events
+type internal PrintPublisher(options) =
+    let sb = StringBuilder()
+    let mutable count = 0
+    interface IPublisher with        
+        member c.PublishAll<'a>(batch : Buffer<'a>, handlers) =
+            let start = Timing.getTimestamp()
+            let mutable completed = false
+            try
+                options.basePublisher.PublishAll(batch, handlers)
+                completed <- true
+            finally
+                let typeInfo = CachedTypeInfo<'a>.Info
+                let canLog =
+                    options.enableLog &&
+                    options.canSendLog typeof<'a> && 
+                    options.formatter.CanFormat<'a>()
+                let canTime =
+                    options.canSendTiming typeof<'a>
+                // stop timer
+                let stop = Timing.getTimestamp()
+                // send timing
+                if canTime then
+                    options.sendTiming {
+                        name = typeInfo.typeName
+                        start = start
+                        stop = stop
+                        count = batch.Count 
+                        }
+                // send log message
+                if canLog then
+                    let duration = stop - start
+                    let usec = duration * 1000L / Timing.ticksPerMs |> int
+                    if not completed || usec >= options.minDurationUsec then
+                        sb.Append(
+                            sprintf "[%s] %d: %dx %s to %d handlers in %dus%s"
+                                options.logLabel count batch.Count 
+                                (typeof<'a> |> typeToString)
+                                handlers.Count usec
+                                (if completed then "" else " failed")
+                            ) |> ignore
+                        // print messages
+                        if not typeInfo.isEmpty then
+                            formatMessagesTo sb options.formatter.Format batch options.messageSizeLimit
+                        sb.AppendLine() |> ignore
+                        options.sendLog (sb.ToString())
+                        sb.Clear() |> ignore
+                count <- count + 1
+    
+type Publisher() =
+    static let mutable instance = Publisher() :> IPublisher
+    static member Default = instance
+    static member Null = NullPublisher.Instance
+    static member Print options = PrintPublisher(options) :> IPublisher
+    interface IPublisher with
+        member c.PublishAll<'a>(batch : Buffer<'a>, handlers) =
+            Publisher.publishAll batch handlers
+
+module PrintPublisherOptions =
+    let enabled = {
+        enableLog = true
+        logLabel = ""
+        messageSizeLimit = 10
+        minDurationUsec = 0
+        sendLog = printfn "%s"
+        sendTiming = ignore
+        canSendLog = fun t -> not (t.Equals(typeof<Commit>))
+        canSendTiming = fun t -> not (t.Equals(typeof<Commit>))
+        basePublisher = Publisher.Default
+        formatter = Formatter()
+        }

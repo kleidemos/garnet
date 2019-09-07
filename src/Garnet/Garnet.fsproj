@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,8 +23,6 @@
     <Compile Include="Containers.fs" />
     <Compile Include="Registration.fs" />
     <Compile Include="Actors.fs" />
-    <Compile Include="Serialization.fs" />
-    <Compile Include="Recording.fs" />
   </ItemGroup>
 
 </Project>

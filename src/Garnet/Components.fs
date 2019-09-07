@@ -1,4 +1,4 @@
-﻿namespace Garnet.Ecs
+﻿namespace Garnet.Composition
 
 open System
 open Garnet.Comparisons
@@ -90,10 +90,11 @@ type ComponentStore<'k, 'c
         let struct(sid, ci) = idToKey id
         let mask = 1UL <<< ci
         segs.Handle(sid, mask, handler)
-    /// Removes all components associated with a given ID
+    /// Removes ID component and assumes other components
+    /// will be cleaned up in commit
     member c.Destroy(id) =
         let struct(sid, ci) = idToKey id
-        segs.Remove(sid, 1UL <<< ci)
+        segs.GetSegments<'c>().Remove(sid, 1UL <<< ci)
     member c.Commit() =
         segs.Commit()
     interface IComponentStore<'k, 'c> with
@@ -104,7 +105,7 @@ type ComponentStore<'k, 'c
             segs.GetSegments<'a>()
     override c.ToString() =
         segs.ToString()
-        
+
 [<Struct>]
 type Entity<'k, 'c
     when 'k :> IComparable<'k> 
@@ -113,7 +114,6 @@ type Entity<'k, 'c
     and 'c :> IComparable<'c>> = {
     id : 'c
     container : ComponentStore<'k, 'c>
-    recycle : 'c -> unit
     } with
     member c.Add x = c.container.Get<_>().Add(c.id, x)
     member c.Set x = c.container.Get<_>().Set(c.id, x)
@@ -123,6 +123,7 @@ type Entity<'k, 'c
     member c.Contains<'a>() = c.container.Get<'a>().Contains(c.id)
     member c.Destroy() = c.container.Destroy(c.id)
     member c.With x = c.Add x; c
+    member c.Without<'a>() = c.Remove<'a>(); c
     override c.ToString() = 
         let printer = PrintHandler(UInt64.MaxValue)
         c.container.Handle(c.id, printer)
@@ -136,5 +137,4 @@ type ComponentStore<'k, 'c
     member c.Get(id) = {
         id = id
         container = c 
-        recycle = ignore
         }
